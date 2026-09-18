@@ -52,38 +52,9 @@ ARTIFACTS_DIR = "model"
 # or create .streamlit/secrets.toml with GEMINI_API_KEY = "..."
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Use a currently supported Gemini model for new users.
-# Google has deprecated older 2.5 models; keep a compatibility alias so stale env values
-# automatically upgrade to the supported 3.6 family.
-DEFAULT_GENERATION_MODEL = "gemini-3.6-flash"
-DEFAULT_REWRITE_MODEL = "gemini-3.6-flash"
-
-
-def resolve_model_name(model_name, fallback):
-    """Map deprecated Gemini aliases to the latest supported model name."""
-    value = (model_name or "").strip()
-    if not value:
-        return fallback
-
-    aliases = {
-        "gemini-2.5-flash": "gemini-3.6-flash",
-        "models/gemini-2.5-flash": "models/gemini-3.6-flash",
-        "gemini-2.5-flash-lite": "gemini-3.6-flash",
-        "models/gemini-2.5-flash-lite": "models/gemini-3.6-flash",
-    }
-
-    normalized = value.lower()
-    return aliases.get(normalized, value)
-
-
-GENERATION_MODEL = resolve_model_name(
-    os.getenv("GEMINI_GENERATION_MODEL") or os.getenv("GEMINI_MODEL"),
-    DEFAULT_GENERATION_MODEL,
-)
-REWRITE_MODEL = resolve_model_name(
-    os.getenv("GEMINI_REWRITE_MODEL") or os.getenv("GEMINI_MODEL"),
-    DEFAULT_REWRITE_MODEL,
-)
+# Use a stable Gemini model that is generally available in the Google GenAI API.
+GENERATION_MODEL = os.getenv("GEMINI_GENERATION_MODEL", "gemini-2.5-flash")
+REWRITE_MODEL = os.getenv("GEMINI_REWRITE_MODEL", "gemini-2.5-flash")
 
 TOP_K = 5
 TEMPERATURE = 0.5
@@ -489,7 +460,7 @@ def generate_text(
                     "Gemini authentication or model setup failed. Check that your API key is valid "
                     "and that the model name is available for your Google AI project. "
                     "The app expects a working GEMINI_API_KEY and a current Gemini model such as "
-                    "gemini-3.6-flash.\n\n"
+                    "gemini-2.5-flash.\n\n"
                     f"SDK error: {sdk_message}\n\n"
                     f"REST error: {rest_message}"
                 ) from rest_error

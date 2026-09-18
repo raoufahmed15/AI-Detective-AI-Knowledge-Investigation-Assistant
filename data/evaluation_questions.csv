@@ -1,0 +1,9 @@
+question,expected_answer,expected_source
+What vehicle was mentioned in INC-001?,Black sedan,INC-001_Witness_Statement.pdf
+Where did INC-007 occur?,Old Port,INC-007_Access_Log_Report.pdf
+Was a black sedan mentioned in another incident besides INC-001?,"Yes, INC-004 and INC-008 mention a black sedan",INC-004_CCTV_Report.pdf
+Are INC-001 and INC-004 definitely connected?,No. The black-sedan similarity is only a possible lead.,Cross_Case_Investigation_Summary.pdf
+What similarity exists between INC-003 and INC-006?,Both occurred on River Road and involved missing construction equipment; both have tire-mark evidence.,Cross_Case_Investigation_Summary.pdf
+Does the evidence prove INC-003 and INC-006 used the same vehicle?,No,INC-006_Investigation_Report.pdf
+What vehicle was recorded in INC-010?,Blue van,INC-010_CCTV_Report.pdf
+Is INC-007 definitely connected to INC-010?,"No. The blue-van information is a possible lead, not proof.",Cross_Case_Investigation_Summary.pdf
