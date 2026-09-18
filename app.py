@@ -105,6 +105,18 @@ with st.sidebar:
 
     st.divider()
     top_k = st.slider("Evidence chunks to retrieve (top_k)", 1, 10, 5)
+
+    st.markdown("#### 💬 اسأل سؤالك")
+    sidebar_question = st.text_input(
+        "اكتب أي سؤال",
+        key="sidebar_question_box",
+        placeholder="مثال: What happened in INC-004?",
+        label_visibility="collapsed",
+    )
+    if st.button("إرسال السؤال", use_container_width=True, key="sidebar_ask_btn"):
+        if sidebar_question.strip():
+            st.session_state.pending_question = sidebar_question.strip()
+
     temperature = st.slider("Answer creativity (temperature)", 0.0, 1.0, 0.5, 0.05)
     show_sources = st.checkbox("Show retrieved evidence under each answer", value=True)
 
@@ -115,7 +127,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.markdown("### 💡 Try asking")
+    st.markdown("### 💡 أمثلة سريعة (اختياري)")
     for q in EXAMPLE_QUESTIONS:
         if st.button(q, use_container_width=True, key=f"example_{q}"):
             st.session_state.pending_question = q
