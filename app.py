@@ -10,7 +10,7 @@ This app loads the three artifacts produced at the end of the notebook
 (config.json, index.faiss, metadata.pkl) and reproduces the exact same
 retrieval pipeline. Because a 12B local LLM (Mistral-Nemo-Instruct) is
 not deployable on free/CPU-only hosting like Streamlit Community Cloud,
-answer generation here uses the Anthropic Claude API instead — the
+answer generation here uses the Google Gemini API instead — the
 retrieval side (embeddings + FAISS) is untouched from the notebook.
 """
 
@@ -23,9 +23,11 @@ import streamlit as st
 from sentence_transformers import SentenceTransformer
 
 try:
-    import anthropic
+    from google import genai
+    from google.genai import types as genai_types
 except ImportError:  # pragma: no cover
-    anthropic = None
+    genai = None
+    genai_types = None
 
 # --------------------------------------------------------------------------
 # Config
@@ -33,8 +35,10 @@ except ImportError:  # pragma: no cover
 APP_TITLE = "AI Detective"
 APP_SUBTITLE = "AI Knowledge Investigation Assistant"
 DEFAULT_ARTIFACTS_DIR = "model"  # folder holding config.json / index.faiss / metadata.pkl
-GENERATION_MODEL = "claude-sonnet-5"
-REWRITE_MODEL = "claude-haiku-4-5-20251001"
+# "-latest" aliases auto-track Google's current recommended model, so this
+# app doesn't need a code change every time a preview model is retired.
+GENERATION_MODEL = "gemini-flash-latest"
+REWRITE_MODEL = "gemini-flash-lite-latest"
 
 EXAMPLE_QUESTIONS = [
     "Tell me about INC-001.",
@@ -91,12 +95,12 @@ with st.sidebar:
              "(this folder must sit next to app.py in the repo).",
     )
 
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+    api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
     if not api_key:
         api_key = st.text_input(
-            "Anthropic API key",
+            "Google Gemini API key",
             type="password",
-            help="Only needed if ANTHROPIC_API_KEY isn't set in Streamlit secrets.",
+            help="Only needed if GEMINI_API_KEY isn't set in Streamlit secrets.",
         )
 
     st.divider()
@@ -181,19 +185,21 @@ Answer:"""
 
 
 def get_client(key):
-    if anthropic is None:
-        raise RuntimeError("The 'anthropic' package is not installed.")
-    return anthropic.Anthropic(api_key=key)
+    if genai is None:
+        raise RuntimeError("The 'google-genai' package is not installed.")
+    return genai.Client(api_key=key)
 
 
 def generate_text(client, prompt, model=GENERATION_MODEL, max_tokens=500, temperature=0.5):
-    resp = client.messages.create(
+    resp = client.models.generate_content(
         model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        messages=[{"role": "user", "content": prompt}],
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        ),
     )
-    return "".join(block.text for block in resp.content if block.type == "text").strip()
+    return (resp.text or "").strip()
 
 
 def contextualize_query(client, history, question):
@@ -260,7 +266,7 @@ except FileNotFoundError as e:
 
 if not api_key:
     st.warning(
-        "Add your **Anthropic API key** in the sidebar (or set `ANTHROPIC_API_KEY` "
+        "Add your **Google Gemini API key** in the sidebar (or set `GEMINI_API_KEY` "
         "in Streamlit secrets) to start chatting."
     )
     st.stop()
