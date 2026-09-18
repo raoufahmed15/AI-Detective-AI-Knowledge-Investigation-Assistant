@@ -45,20 +45,45 @@ APP_SUBTITLE = "AI Knowledge Investigation Assistant"
 
 ARTIFACTS_DIR = "model"
 
-from google import genai
+# Keep credentials in environment variables or Streamlit secrets.
+# Example:
+#   export GEMINI_API_KEY="..."
+#   setx GEMINI_API_KEY "..."   # Windows PowerShell
+# or create .streamlit/secrets.toml with GEMINI_API_KEY = "..."
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-GEMINI_API_KEY = "AQ.Ab8RN6LEaCJuIqRkfOY8yJXgvasLH7nMENbQwQajsbm1wHltMg"
+# Use a currently supported Gemini model for new users.
+# Google has deprecated older 2.5 models; keep a compatibility alias so stale env values
+# automatically upgrade to the supported 3.6 family.
+DEFAULT_GENERATION_MODEL = "gemini-3.6-flash"
+DEFAULT_REWRITE_MODEL = "gemini-3.6-flash"
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+
+def resolve_model_name(model_name, fallback):
+    """Map deprecated Gemini aliases to the latest supported model name."""
+    value = (model_name or "").strip()
+    if not value:
+        return fallback
+
+    aliases = {
+        "gemini-2.5-flash": "gemini-3.6-flash",
+        "models/gemini-2.5-flash": "models/gemini-3.6-flash",
+        "gemini-2.5-flash-lite": "gemini-3.6-flash",
+        "models/gemini-2.5-flash-lite": "models/gemini-3.6-flash",
+    }
+
+    normalized = value.lower()
+    return aliases.get(normalized, value)
 
 
-# Gemini models
-GENERATION_MODEL = "gemini-3.7-flash"
-REWRITE_MODEL = "gemini-3.7-flash"
-
-# Gemini API key for the live demo
-# Replace this value with your current Gemini API key if you rotate it.
-GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
+GENERATION_MODEL = resolve_model_name(
+    os.getenv("GEMINI_GENERATION_MODEL") or os.getenv("GEMINI_MODEL"),
+    DEFAULT_GENERATION_MODEL,
+)
+REWRITE_MODEL = resolve_model_name(
+    os.getenv("GEMINI_REWRITE_MODEL") or os.getenv("GEMINI_MODEL"),
+    DEFAULT_REWRITE_MODEL,
+)
 
 TOP_K = 5
 TEMPERATURE = 0.5
@@ -144,12 +169,25 @@ st.markdown(
 # ============================================================================
 
 def get_api_key():
-    """Load the Gemini API key configured in this source file."""
+    """Load the Gemini API key from environment variables or Streamlit secrets."""
 
-    api_key = GEMINI_API_KEY
+    try:
+        secrets_key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        secrets_key = ""
+
+    api_key = (
+        os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or secrets_key
+        or GEMINI_API_KEY
+    )
 
     if not api_key or not str(api_key).strip():
-        st.error("Gemini API key is missing.")
+        st.error(
+            "Gemini API key is missing. Add it to your environment as GEMINI_API_KEY "
+            "or create .streamlit/secrets.toml with GEMINI_API_KEY = \"...\" and restart the app."
+        )
         st.stop()
 
     return str(api_key).strip()
@@ -432,9 +470,9 @@ def generate_text(
         except Exception as sdk_error:
             sdk_message = str(sdk_error)
 
-            # Authentication failures can sometimes come from SDK/header
-            # handling. Try the documented REST header path before failing.
-            if "401" not in sdk_message and "UNAUTHENTICATED" not in sdk_message:
+            # If the key is wrong or the model name is invalid, the REST layer can
+            # still fail. Keep the message actionable for app users.
+            if "401" not in sdk_message and "UNAUTHENTICATED" not in sdk_message and "404" not in sdk_message and "not found" not in sdk_message.lower():
                 raise
 
             try:
@@ -446,14 +484,14 @@ def generate_text(
                     temperature=temperature,
                 )
             except Exception as rest_error:
+                rest_message = str(rest_error)
                 raise RuntimeError(
-                    "Gemini authentication failed in both the Python SDK "
-                    "and the direct REST API. The key is being sent through "
-                    "the documented x-goog-api-key header. Check that the "
-                    "complete AQ. authorization key is active and linked to "
-                    "a Gemini API project.\n\n"
+                    "Gemini authentication or model setup failed. Check that your API key is valid "
+                    "and that the model name is available for your Google AI project. "
+                    "The app expects a working GEMINI_API_KEY and a current Gemini model such as "
+                    "gemini-3.6-flash.\n\n"
                     f"SDK error: {sdk_message}\n\n"
-                    f"REST error: {rest_error}"
+                    f"REST error: {rest_message}"
                 ) from rest_error
 
     return _generate_text_rest(

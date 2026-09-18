@@ -1,5 +1,8 @@
-streamlit
-sentence-transformers
-faiss-cpu
-requests
+streamlit==1.62.0
+sentence-transformers==6.0.1
+transformers==5.17.0
+tokenizers==0.23.2
+huggingface-hub==1.32.0
+faiss-cpu==1.15.1
+requests==2.34.2
 google-genai==2.24.0

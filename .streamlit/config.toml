@@ -8,5 +8,6 @@ font = "sans serif"
 
 [server]
 headless = true
+port = 8502
 enableCORS = false
 fileWatcherType = "none"
