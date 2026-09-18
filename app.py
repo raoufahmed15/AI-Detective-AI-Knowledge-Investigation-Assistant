@@ -46,6 +46,9 @@ ARTIFACTS_DIR = "model"  # folder holding config.json / index.faiss / metadata.p
 GENERATION_MODEL = "gemini-flash-latest"
 REWRITE_MODEL = "gemini-flash-lite-latest"
 
+# ضع مفتاح Gemini بتاعك هنا مباشرة (من https://aistudio.google.com/apikey)
+GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
+
 TOP_K = 5              # evidence chunks retrieved per question
 TEMPERATURE = 0.5      # answer generation temperature
 SHOW_SOURCES = True    # show the retrieved evidence under each answer
@@ -222,12 +225,9 @@ except FileNotFoundError as e:
     )
     st.stop()
 
-api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
-if not api_key:
-    st.error(
-        "Setup error: `GEMINI_API_KEY` is not set in Streamlit secrets. "
-        "Add it from App settings → Secrets, then reboot the app."
-    )
+api_key = GEMINI_API_KEY
+if not api_key or api_key == "ضع_مفتاحك_هنا":
+    st.error("Setup error: ضع مفتاح Gemini بتاعك في متغيّر GEMINI_API_KEY أول app.py.")
     st.stop()
 
 embed_model = load_embedding_model(config.get("embedding_model", "intfloat/multilingual-e5-base"))
