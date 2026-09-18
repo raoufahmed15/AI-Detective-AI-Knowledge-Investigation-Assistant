@@ -12,10 +12,7 @@ PDF incident reports + structured crime records
 -> Gemini LLM answer generation
 -> conversation memory + query rewriting
 
-The API key is loaded ONLY from Streamlit secrets:
-    GEMINI_API_KEY
-
-It is never hard-coded in this file.
+Gemini API key is configured directly in this file for the live demo.
 """
 
 # ============================================================================
@@ -50,6 +47,10 @@ ARTIFACTS_DIR = "model"
 # Gemini models
 GENERATION_MODEL = "gemini-flash-latest"
 REWRITE_MODEL = "gemini-flash-lite-latest"
+
+# Gemini API key for the live demo
+# Replace this value with your current Gemini API key if you rotate it.
+GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
 
 TOP_K = 5
 TEMPERATURE = 0.5
@@ -132,29 +133,15 @@ st.markdown(
 # ============================================================================
 
 def get_api_key():
-    """
-    Load Gemini API key from Streamlit secrets.
+    """Load the Gemini API key configured in this source file."""
 
-    Expected:
-        GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
-    """
+    api_key = GEMINI_API_KEY
 
-    try:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-    except Exception:
-        api_key = None
-
-    if not api_key:
-        st.error(
-            "Setup error: GEMINI_API_KEY is missing from Streamlit Secrets."
-        )
-        st.info(
-            "Add GEMINI_API_KEY to Streamlit Secrets, then restart the app."
-        )
+    if not api_key or not str(api_key).strip():
+        st.error("Gemini API key is missing.")
         st.stop()
 
     return str(api_key).strip()
-
 
 # ============================================================================
 # Load artifacts
@@ -318,7 +305,7 @@ def get_client():
     """
     Create the official Google GenAI client.
 
-    The API key comes from Streamlit Secrets.
+    The API key is loaded from GEMINI_API_KEY defined in this file.
     """
 
     if genai is None:
