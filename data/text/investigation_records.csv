@@ -1,0 +1,11 @@
+incident_id,date,time,location,incident_type,description,vehicle,evidence,status,related_incident
+INC-001,2026-08-01,21:30,Downtown,Warehouse Theft,A warehouse reported missing electronic equipment after closing hours.,Black sedan,Witness statement,Open,INC-004
+INC-002,2026-08-03,18:15,North Market,Vehicle Vandalism,A parked delivery van was damaged while the owner was inside a nearby shop.,White pickup,CCTV camera,Closed,
+INC-003,2026-08-05,23:05,River Road,Equipment Theft,Construction equipment was reported missing from a secured site.,Black SUV,Broken gate,Open,INC-006
+INC-004,2026-08-07,22:00,East Industrial Zone,Warehouse Theft,A second warehouse reported missing laptops and networking equipment.,Black sedan,CCTV footage,Under Investigation,INC-001
+INC-005,2026-08-09,16:40,Central Station,Bag Theft,A passenger reported a missing backpack shortly after arriving at the station.,Silver hatchback,Witness statement,Open,
+INC-006,2026-08-12,00:20,River Road,Equipment Theft,A second construction site reported missing tools and equipment.,Black SUV,Tire marks,Under Investigation,INC-003
+INC-007,2026-08-14,20:10,Old Port,Cargo Theft,Several sealed boxes were reported missing from a temporary storage area.,Blue van,Access log,Open,
+INC-008,2026-08-17,19:25,Downtown,Shop Burglary,A retail shop reported forced entry and missing computer accessories.,Black sedan,CCTV footage,Open,INC-004
+INC-009,2026-08-20,14:50,West District,Document Theft,A company reported missing archived documents from a storage room.,Gray hatchback,Access card log,Closed,
+INC-010,2026-08-22,02:10,Harbor Road,Cargo Theft,Boxes were removed from a secured loading area during the early morning.,Blue van,CCTV footage,Under Investigation,INC-007
