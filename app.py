@@ -9,10 +9,10 @@ Pipeline:
 PDF incident reports + structured crime records
 -> multilingual-e5-base embeddings
 -> FAISS IndexFlatIP
--> Gemini LLM answer generation
+-> Groq LLM answer generation
 -> conversation memory + query rewriting
 
-Gemini API key is configured directly in this file for the live demo.
+Groq API key is configured through environment variables or Streamlit secrets.
 """
 
 # ============================================================================
@@ -28,13 +28,6 @@ import faiss
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-except ImportError:  # pragma: no cover
-    genai = None
-    genai_types = None
-
 
 # ============================================================================
 # Fixed configuration
@@ -47,14 +40,18 @@ ARTIFACTS_DIR = "model"
 
 # Keep credentials in environment variables or Streamlit secrets.
 # Example:
-#   export GEMINI_API_KEY="..."
-#   setx GEMINI_API_KEY "..."   # Windows PowerShell
-# or create .streamlit/secrets.toml with GEMINI_API_KEY = "..."
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+#   export GROQ_API_KEY="..."
+#   setx GROQ_API_KEY "..."   # Windows PowerShell
+# or create .streamlit/secrets.toml with GROQ_API_KEY = "..."
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-# Use a stable Gemini model that is generally available in the Google GenAI API.
-GENERATION_MODEL = os.getenv("GEMINI_GENERATION_MODEL", "gemini-2.5-flash")
-REWRITE_MODEL = os.getenv("GEMINI_REWRITE_MODEL", "gemini-2.5-flash")
+# Groq model availability depends on the account. Use a model ID that is active for
+# this key; older llama IDs can return 404 or decommissioned errors.
+DEFAULT_GENERATION_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+DEFAULT_REWRITE_MODEL = os.getenv("GROQ_REWRITE_MODEL", "openai/gpt-oss-20b")
+
+GENERATION_MODEL = os.getenv("GROQ_MODEL") or DEFAULT_GENERATION_MODEL
+REWRITE_MODEL = os.getenv("GROQ_REWRITE_MODEL") or DEFAULT_REWRITE_MODEL
 
 TOP_K = 5
 TEMPERATURE = 0.5
@@ -136,28 +133,28 @@ st.markdown(
 
 
 # ============================================================================
-# Gemini API key
+# Groq API key
 # ============================================================================
 
 def get_api_key():
-    """Load the Gemini API key from environment variables or Streamlit secrets."""
+    """Load the Groq API key from environment variables or Streamlit secrets."""
 
     try:
-        secrets_key = st.secrets.get("GEMINI_API_KEY", "")
+        secrets_key = st.secrets.get("GROQ_API_KEY", "")
     except Exception:
         secrets_key = ""
 
     api_key = (
-        os.getenv("GEMINI_API_KEY")
-        or os.getenv("GOOGLE_API_KEY")
+        os.getenv("GROQ_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
         or secrets_key
-        or GEMINI_API_KEY
+        or GROQ_API_KEY
     )
 
     if not api_key or not str(api_key).strip():
         st.error(
-            "Gemini API key is missing. Add it to your environment as GEMINI_API_KEY "
-            "or create .streamlit/secrets.toml with GEMINI_API_KEY = \"...\" and restart the app."
+            "Groq API key is missing. Add it to your environment as GROQ_API_KEY "
+            "or create .streamlit/secrets.toml with GROQ_API_KEY = \"...\" and restart the app."
         )
         st.stop()
 
@@ -318,62 +315,45 @@ Answer:
 
 
 # ============================================================================
-# Gemini client
+# Groq client
 # ============================================================================
 
 def get_client():
-    """Create the official Google GenAI client."""
+    """Create a Groq-compatible API client."""
 
     api_key = get_api_key()
-
-    if genai is None:
-        return {"api_key": api_key, "sdk": None}
-
-    return {
-        "api_key": api_key,
-        "sdk": genai.Client(api_key=api_key),
-    }
+    return {"api_key": api_key, "provider": "groq"}
 
 
 # ============================================================================
-# Gemini text generation
+# Groq text generation
 # ============================================================================
 
-def _generate_text_rest(
-    api_key,
+def generate_text(
+    client,
     prompt,
     model,
     max_tokens=500,
     temperature=0.5,
 ):
-    """
-    Direct Gemini REST fallback using the documented x-goog-api-key header.
-    This bypasses SDK credential/header handling.
-    """
+    """Generate text via the Groq OpenAI-compatible API."""
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent"
-    )
+    api_key = client["api_key"]
+    url = "https://api.groq.com/openai/v1/chat/completions"
 
     response = requests.post(
         url,
         headers={
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
         },
         json={
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
+            "model": model,
+            "messages": [
+                {"role": "user", "content": prompt}
             ],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            },
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         },
         timeout=60,
     )
@@ -385,93 +365,20 @@ def _generate_text_rest(
             details = response.text
 
         raise RuntimeError(
-            f"Gemini REST error {response.status_code}: {details}"
+            f"Groq API error {response.status_code}: {details}"
         )
 
     payload = response.json()
-    candidates = payload.get("candidates") or []
+    choices = payload.get("choices") or []
+    if not choices:
+        raise RuntimeError("Groq API returned no choices.")
 
-    text_parts = []
-    for candidate in candidates:
-        content = candidate.get("content") or {}
-        for part in content.get("parts") or []:
-            part_text = part.get("text")
-            if part_text:
-                text_parts.append(part_text)
-
-    text = "\n".join(text_parts).strip()
-
+    message = choices[0].get("message") or {}
+    text = message.get("content")
     if not text:
-        raise RuntimeError("Gemini REST returned an empty response.")
+        raise RuntimeError("Groq API returned an empty response.")
 
-    return text
-
-
-def generate_text(
-    client,
-    prompt,
-    model,
-    max_tokens=500,
-    temperature=0.5,
-):
-    """
-    Generate text with the official SDK, then fall back to direct REST
-    if the SDK request fails at the authentication layer.
-    """
-
-    api_key = client["api_key"]
-    sdk_client = client.get("sdk")
-
-    if sdk_client is not None and genai_types is not None:
-        try:
-            response = sdk_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                ),
-            )
-
-            text = getattr(response, "text", None)
-
-            if text:
-                return text.strip()
-
-        except Exception as sdk_error:
-            sdk_message = str(sdk_error)
-
-            # If the key is wrong or the model name is invalid, the REST layer can
-            # still fail. Keep the message actionable for app users.
-            if "401" not in sdk_message and "UNAUTHENTICATED" not in sdk_message and "404" not in sdk_message and "not found" not in sdk_message.lower():
-                raise
-
-            try:
-                return _generate_text_rest(
-                    api_key=api_key,
-                    prompt=prompt,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-            except Exception as rest_error:
-                rest_message = str(rest_error)
-                raise RuntimeError(
-                    "Gemini authentication or model setup failed. Check that your API key is valid "
-                    "and that the model name is available for your Google AI project. "
-                    "The app expects a working GEMINI_API_KEY and a current Gemini model such as "
-                    "gemini-2.5-flash.\n\n"
-                    f"SDK error: {sdk_message}\n\n"
-                    f"REST error: {rest_message}"
-                ) from rest_error
-
-    return _generate_text_rest(
-        api_key=api_key,
-        prompt=prompt,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+    return str(text).strip()
 
 
 # ============================================================================
@@ -688,7 +595,7 @@ embed_model = load_embedding_model(
 
 
 # ============================================================================
-# Initialize Gemini client
+# Initialize Groq client
 # ============================================================================
 
 try:
@@ -698,7 +605,7 @@ try:
 except Exception as error:
 
     st.error(
-        f"Gemini initialization failed: {error}"
+        f"Groq initialization failed: {error}"
     )
     st.stop()
 
