@@ -1,23 +1,26 @@
 """
 AI Detective — AI Knowledge Investigation Assistant
 ====================================================
+
 Streamlit front-end + serving layer for the RAG pipeline built in the
-"mid-term-project" notebook (PDF incident reports + structured crime
-records -> multilingual-e5-base embeddings -> FAISS IndexFlatIP ->
-LLM answer generation with conversation memory & query rewriting).
+"mid-term-project" notebook.
 
-This app loads the three artifacts produced at the end of the notebook
-(config.json, index.faiss, metadata.pkl) and reproduces the exact same
-retrieval pipeline. Because a 12B local LLM (Mistral-Nemo-Instruct) is
-not deployable on free/CPU-only hosting like Streamlit Community Cloud,
-answer generation here uses the Google Gemini API instead — the
-retrieval side (embeddings + FAISS) is untouched from the notebook.
+Pipeline:
+PDF incident reports + structured crime records
+-> multilingual-e5-base embeddings
+-> FAISS IndexFlatIP
+-> Gemini LLM answer generation
+-> conversation memory + query rewriting
 
-Everything below is intentionally hard-coded (no sidebar, no settings
-UI): the end user only ever sees a question box and an answer. The
-API key comes ONLY from Streamlit secrets (GEMINI_API_KEY) — it is
-never entered by the user.
+The API key is loaded ONLY from Streamlit secrets:
+    GEMINI_API_KEY
+
+It is never hard-coded in this file.
 """
+
+# ============================================================================
+# Imports
+# ============================================================================
 
 import json
 import os
@@ -34,107 +37,265 @@ except ImportError:  # pragma: no cover
     genai = None
     genai_types = None
 
-# ==========================================================================
-# Fixed configuration — edit these values in code, never exposed in the UI
-# ==========================================================================
+
+# ============================================================================
+# Fixed configuration
+# ============================================================================
+
 APP_TITLE = "AI Detective"
 APP_SUBTITLE = "AI Knowledge Investigation Assistant"
-ARTIFACTS_DIR = "model"  # folder holding config.json / index.faiss / metadata.pkl
 
-# "-latest" aliases auto-track Google's current recommended model, so this
-# app doesn't need a code change every time a preview model is retired.
+ARTIFACTS_DIR = "model"
+
+# Gemini models
 GENERATION_MODEL = "gemini-flash-latest"
 REWRITE_MODEL = "gemini-flash-lite-latest"
 
-# ضع مفتاح Gemini بتاعك هنا مباشرة (من https://aistudio.google.com/apikey)
-GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
+TOP_K = 5
+TEMPERATURE = 0.5
+SHOW_SOURCES = True
 
-TOP_K = 5              # evidence chunks retrieved per question
-TEMPERATURE = 0.5      # answer generation temperature
-SHOW_SOURCES = True    # show the retrieved evidence under each answer
 
-st.set_page_config(page_title=APP_TITLE, page_icon="🕵️", layout="centered")
+# ============================================================================
+# Page configuration
+# ============================================================================
 
-# --------------------------------------------------------------------------
+st.set_page_config(
+    page_title=APP_TITLE,
+    page_icon="🕵️",
+    layout="centered",
+)
+
+
+# ============================================================================
 # Styling
-# --------------------------------------------------------------------------
+# ============================================================================
+
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 2.5rem; max-width: 820px; }
+
+    .block-container {
+        padding-top: 2.5rem;
+        max-width: 820px;
+    }
+
     .ai-detective-header {
-        display: flex; align-items: center; gap: 0.75rem;
-        padding-bottom: 0.5rem; border-bottom: 1px solid rgba(120,120,120,0.25);
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid rgba(120,120,120,0.25);
         margin-bottom: 1.25rem;
     }
-    .ai-detective-header h1 { margin: 0; font-size: 1.9rem; }
-    .ai-detective-header p { margin: 0; opacity: 0.7; font-size: 0.95rem; }
+
+    .ai-detective-header h1 {
+        margin: 0;
+        font-size: 1.9rem;
+    }
+
+    .ai-detective-header p {
+        margin: 0;
+        opacity: 0.7;
+        font-size: 0.95rem;
+    }
+
     .evidence-card {
-        border: 1px solid rgba(120,120,120,0.25); border-radius: 10px;
-        padding: 0.6rem 0.9rem; margin-bottom: 0.5rem; font-size: 0.85rem;
+        border: 1px solid rgba(120,120,120,0.25);
+        border-radius: 10px;
+        padding: 0.6rem 0.9rem;
+        margin-bottom: 0.5rem;
+        font-size: 0.85rem;
     }
+
     .evidence-score {
-        display: inline-block; padding: 0.05rem 0.5rem; border-radius: 999px;
-        background: rgba(46,164,79,0.15); font-weight: 600; font-size: 0.75rem;
+        display: inline-block;
+        padding: 0.05rem 0.5rem;
+        border-radius: 999px;
+        background: rgba(46,164,79,0.15);
+        font-weight: 600;
+        font-size: 0.75rem;
     }
-    .stChatMessage { font-size: 0.95rem; }
+
+    .stChatMessage {
+        font-size: 0.95rem;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# --------------------------------------------------------------------------
-# Load artifacts (cached) — silent to the user, no folder/setting exposed
-# --------------------------------------------------------------------------
+
+# ============================================================================
+# Gemini API key
+# ============================================================================
+
+def get_api_key():
+    """
+    Load Gemini API key from Streamlit secrets.
+
+    Expected:
+        GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
+    """
+
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        api_key = None
+
+    if not api_key:
+        st.error(
+            "Setup error: GEMINI_API_KEY is missing from Streamlit Secrets."
+        )
+        st.info(
+            "Add GEMINI_API_KEY to Streamlit Secrets, then restart the app."
+        )
+        st.stop()
+
+    return str(api_key).strip()
+
+
+# ============================================================================
+# Load artifacts
+# ============================================================================
+
 @st.cache_resource(show_spinner="Loading knowledge base...")
 def load_artifacts(directory: str):
+
     config_path = os.path.join(directory, "config.json")
     index_path = os.path.join(directory, "index.faiss")
     metadata_path = os.path.join(directory, "metadata.pkl")
 
-    for p in (config_path, index_path, metadata_path):
-        if not os.path.exists(p):
-            raise FileNotFoundError(p)
+    for path in (config_path, index_path, metadata_path):
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
+
     index = faiss.read_index(index_path)
+
     with open(metadata_path, "rb") as f:
         metadata = pickle.load(f)
+
     return config, index, metadata
 
 
+# ============================================================================
+# Embedding model
+# ============================================================================
+
 @st.cache_resource(show_spinner="Loading embedding model (first run only)...")
 def load_embedding_model(model_name: str):
-    return SentenceTransformer(model_name, device="cpu")
+
+    return SentenceTransformer(
+        model_name,
+        device="cpu",
+    )
 
 
-# --------------------------------------------------------------------------
-# RAG pipeline — mirrors the notebook exactly (retrieval side unchanged)
-# --------------------------------------------------------------------------
-def search_index(query, model, index, metadata, top_k=5):
-    q = model.encode([f"query: {query}"], convert_to_numpy=True)
+# ============================================================================
+# RAG retrieval
+# ============================================================================
+
+def search_index(
+    query,
+    model,
+    index,
+    metadata,
+    top_k=5,
+):
+    """
+    Search the FAISS index using multilingual-e5-base.
+    """
+
+    q = model.encode(
+        [f"query: {query}"],
+        convert_to_numpy=True,
+    )
+
     faiss.normalize_L2(q)
-    scores, ids = index.search(q, top_k)
-    return [dict(metadata[i], score=float(s)) for s, i in zip(scores[0], ids[0]) if i != -1]
+
+    scores, ids = index.search(
+        q,
+        top_k,
+    )
+
+    results = []
+
+    for score, idx in zip(scores[0], ids[0]):
+
+        if idx == -1:
+            continue
+
+        results.append(
+            {
+                **metadata[idx],
+                "score": float(score),
+            }
+        )
+
+    return results
 
 
-def build_context(history, max_turns=6):
-    return "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in history[-max_turns:])
+# ============================================================================
+# Conversation context
+# ============================================================================
+
+def build_context(
+    history,
+    max_turns=6,
+):
+    """
+    Convert conversation history into plain text.
+    """
+
+    return "\n".join(
+        f"{turn['role'].capitalize()}: {turn['content']}"
+        for turn in history[-max_turns:]
+    )
 
 
-def build_rag_prompt(question, evidence, history_text):
+# ============================================================================
+# RAG prompt
+# ============================================================================
+
+def build_rag_prompt(
+    question,
+    evidence,
+    history_text,
+):
+
     evidence_block = "\n\n".join(
-        f"[{i}] ({e['source_name']}, "
+        f"[{i}] "
+        f"({e['source_name']}, "
         f"{'page ' + str(e['page']) if e['source_type'] == 'pdf' else 'row ' + str(e['row_number'])}, "
-        f"incident {e['incident_id']}, score {e['score']:.2f})\n{e['text']}"
+        f"incident {e['incident_id']}, "
+        f"score {e['score']:.2f})\n"
+        f"{e['text']}"
         for i, e in enumerate(evidence, 1)
-    ) or "(no evidence retrieved)"
+    )
 
-    return f"""You are AI Detective. Answer using ONLY the evidence and conversation below.
-- Never invent facts; say so if the evidence is insufficient.
-- A shared detail (e.g. same vehicle) across cases is only a POSSIBLE connection, never proof.
+    if not evidence_block:
+        evidence_block = "(no evidence retrieved)"
+
+    return f"""
+You are AI Detective.
+
+Answer the user's question using ONLY the retrieved evidence
+and the conversation below.
+
+Rules:
+
+- Never invent facts.
+- If the evidence is insufficient, clearly say that the evidence is insufficient.
+- A shared detail across cases is only a POSSIBLE connection, never proof.
+- Do not treat similarity as proof of identity or causation.
 - Mention relevant incident IDs when synthesizing multiple sources.
+- Keep the answer concise but informative.
+- Prefer direct evidence over assumptions.
+- If multiple pieces of evidence conflict, explicitly mention the conflict.
 
 Conversation so far:
 {history_text or "(none)"}
@@ -142,18 +303,53 @@ Conversation so far:
 Retrieved evidence:
 {evidence_block}
 
-Question: {question}
-Answer:"""
+Question:
+{question}
+
+Answer:
+""".strip()
 
 
-def get_client(key):
+# ============================================================================
+# Gemini client
+# ============================================================================
+
+def get_client():
+    """
+    Create the official Google GenAI client.
+
+    The API key comes from Streamlit Secrets.
+    """
+
     if genai is None:
-        raise RuntimeError("The 'google-genai' package is not installed.")
-    return genai.Client(api_key=key)
+        raise RuntimeError(
+            "The 'google-genai' package is not installed. "
+            "Run: pip install -U google-genai"
+        )
+
+    api_key = get_api_key()
+
+    return genai.Client(
+        api_key=api_key
+    )
 
 
-def generate_text(client, prompt, model=GENERATION_MODEL, max_tokens=500, temperature=0.5):
-    resp = client.models.generate_content(
+# ============================================================================
+# Gemini text generation
+# ============================================================================
+
+def generate_text(
+    client,
+    prompt,
+    model,
+    max_tokens=500,
+    temperature=0.5,
+):
+    """
+    Generate text using Gemini.
+    """
+
+    response = client.models.generate_content(
         model=model,
         contents=prompt,
         config=genai_types.GenerateContentConfig(
@@ -161,142 +357,446 @@ def generate_text(client, prompt, model=GENERATION_MODEL, max_tokens=500, temper
             max_output_tokens=max_tokens,
         ),
     )
-    return (resp.text or "").strip()
+
+    text = getattr(response, "text", None)
+
+    if not text:
+        raise RuntimeError(
+            "Gemini returned an empty response."
+        )
+
+    return text.strip()
 
 
-def contextualize_query(client, history, question):
+# ============================================================================
+# Query contextualization
+# ============================================================================
+
+def contextualize_query(
+    client,
+    history,
+    question,
+):
+
     if not history:
         return question
-    prompt = f"""Conversation so far:
+
+    prompt = f"""
+Conversation so far:
 {build_context(history, 4)}
 
-New question: "{question}"
-Rewrite it as one standalone question (resolve pronouns like "it"/"that"). Reply with ONLY the rewritten question.
-Rewritten question:"""
+New question:
+"{question}"
+
+Rewrite the new question as ONE standalone question.
+
+Resolve pronouns such as:
+- it
+- that
+- this
+- they
+- them
+- he
+- she
+
+Use the previous conversation only when necessary.
+
+Reply with ONLY the rewritten question.
+
+Rewritten question:
+""".strip()
+
     rewritten = generate_text(
-        client, prompt, model=REWRITE_MODEL, max_tokens=60, temperature=0.3
-    ).split("\n")[0].strip()
+        client=client,
+        prompt=prompt,
+        model=REWRITE_MODEL,
+        max_tokens=60,
+        temperature=0.3,
+    )
+
+    rewritten = rewritten.split("\n")[0].strip()
+
     return rewritten or question
 
 
-def rag_answer(client, question, history, index, embed_model, metadata, top_k=TOP_K, temperature=TEMPERATURE):
-    contextualized = contextualize_query(client, history, question)
-    evidence = search_index(contextualized, embed_model, index, metadata, top_k=top_k)
-    prompt = build_rag_prompt(question, evidence, build_context(history))
-    answer = generate_text(client, prompt, temperature=temperature)
-    history += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+# ============================================================================
+# Main RAG answer
+# ============================================================================
+
+def rag_answer(
+    client,
+    question,
+    history,
+    index,
+    embed_model,
+    metadata,
+    top_k=TOP_K,
+    temperature=TEMPERATURE,
+):
+
+    # ------------------------------------------------------------
+    # 1. Rewrite question using conversation history
+    # ------------------------------------------------------------
+
+    contextualized = contextualize_query(
+        client,
+        history,
+        question,
+    )
+
+    # ------------------------------------------------------------
+    # 2. Retrieve evidence
+    # ------------------------------------------------------------
+
+    evidence = search_index(
+        contextualized,
+        embed_model,
+        index,
+        metadata,
+        top_k=top_k,
+    )
+
+    # ------------------------------------------------------------
+    # 3. Build grounded RAG prompt
+    # ------------------------------------------------------------
+
+    prompt = build_rag_prompt(
+        question,
+        evidence,
+        build_context(history),
+    )
+
+    # ------------------------------------------------------------
+    # 4. Generate final answer
+    # ------------------------------------------------------------
+
+    answer = generate_text(
+        client=client,
+        prompt=prompt,
+        model=GENERATION_MODEL,
+        max_tokens=500,
+        temperature=temperature,
+    )
+
+    # ------------------------------------------------------------
+    # 5. Update conversation memory
+    # ------------------------------------------------------------
+
+    history.extend(
+        [
+            {
+                "role": "user",
+                "content": question,
+            },
+            {
+                "role": "assistant",
+                "content": answer,
+            },
+        ]
+    )
+
+    # ------------------------------------------------------------
+    # 6. Return result
+    # ------------------------------------------------------------
+
     return {
         "answer": answer,
         "original_question": question,
         "contextualized_question": contextualized,
         "sources": [
-            {k: e[k] for k in ("source_type", "source_name", "page", "row_number", "incident_id", "score")}
-            for e in evidence
+            {
+                key: evidence_item[key]
+                for key in (
+                    "source_type",
+                    "source_name",
+                    "page",
+                    "row_number",
+                    "incident_id",
+                    "score",
+                )
+            }
+            for evidence_item in evidence
         ],
     }
 
 
-# --------------------------------------------------------------------------
+# ============================================================================
 # Header
-# --------------------------------------------------------------------------
+# ============================================================================
+
 st.markdown(
     f"""
     <div class="ai-detective-header">
-        <div style="font-size:2.2rem;">🕵️</div>
+
+        <div style="font-size:2.2rem;">
+            🕵️
+        </div>
+
         <div>
             <h1>{APP_TITLE}</h1>
             <p>{APP_SUBTITLE}</p>
         </div>
+
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# --------------------------------------------------------------------------
-# Startup checks — developer-facing errors only, nothing for the end user
-# to configure
-# --------------------------------------------------------------------------
+
+# ============================================================================
+# Startup checks
+# ============================================================================
+
 try:
-    config, index, metadata = load_artifacts(ARTIFACTS_DIR)
-except FileNotFoundError as e:
-    st.error(
-        f"Setup error: couldn't find `{e}`. Make sure the `{ARTIFACTS_DIR}/` folder "
-        f"(config.json, index.faiss, metadata.pkl) is committed next to app.py."
+
+    config, index, metadata = load_artifacts(
+        ARTIFACTS_DIR
     )
+
+except FileNotFoundError as error:
+
+    st.error(
+        f"Setup error: couldn't find `{error}`."
+    )
+
+    st.info(
+        f"Make sure the `{ARTIFACTS_DIR}/` folder contains:\n\n"
+        "- config.json\n"
+        "- index.faiss\n"
+        "- metadata.pkl"
+    )
+
     st.stop()
 
-api_key = GEMINI_API_KEY
-if not api_key or api_key == "ضع_مفتاحك_هنا":
-    st.error("Setup error: ضع مفتاح Gemini بتاعك في متغيّر GEMINI_API_KEY أول app.py.")
+
+# ============================================================================
+# Load embedding model
+# ============================================================================
+
+embed_model = load_embedding_model(
+    config.get(
+        "embedding_model",
+        "intfloat/multilingual-e5-base",
+    )
+)
+
+
+# ============================================================================
+# Initialize Gemini client
+# ============================================================================
+
+try:
+
+    client = get_client()
+
+except Exception as error:
+
+    st.error(
+        f"Gemini initialization failed: {error}"
+    )
+
     st.stop()
 
-embed_model = load_embedding_model(config.get("embedding_model", "intfloat/multilingual-e5-base"))
-client = get_client(api_key)
 
-# --------------------------------------------------------------------------
+# ============================================================================
 # Chat state
-# --------------------------------------------------------------------------
+# ============================================================================
+
 if "messages" not in st.session_state:
-    st.session_state.messages = []  # [{"role": "user"/"assistant", "content": str, "sources": [...]}]
+
+    st.session_state.messages = []
+
+
 if "rag_history" not in st.session_state:
-    st.session_state.rag_history = []  # buffer memory fed into contextualize_query / prompt
+
+    st.session_state.rag_history = []
+
+
+# ============================================================================
+# Empty state
+# ============================================================================
 
 if not st.session_state.messages:
-    st.caption("اسأل عن أي حادثة أو تفصيلة، وهيجاوبك بناءً على الأدلة المسترجعة فقط.")
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if msg["role"] == "assistant" and SHOW_SOURCES and msg.get("sources"):
-            with st.expander(f"📎 {len(msg['sources'])} source(s) used"):
-                for s in msg["sources"]:
-                    loc = f"page {s['page']}" if s["source_type"] == "pdf" else f"row {s['row_number']}"
+    st.caption(
+        "اسأل عن أي حادثة أو تفصيلة، "
+        "وهيجاوبك بناءً على الأدلة المسترجعة فقط."
+    )
+
+
+# ============================================================================
+# Render previous messages
+# ============================================================================
+
+for message in st.session_state.messages:
+
+    with st.chat_message(message["role"]):
+
+        st.markdown(
+            message["content"]
+        )
+
+        if (
+            message["role"] == "assistant"
+            and SHOW_SOURCES
+            and message.get("sources")
+        ):
+
+            with st.expander(
+                f"📎 {len(message['sources'])} source(s) used"
+            ):
+
+                for source in message["sources"]:
+
+                    if source["source_type"] == "pdf":
+                        location = f"page {source['page']}"
+                    else:
+                        location = f"row {source['row_number']}"
+
                     st.markdown(
-                        f"""<div class="evidence-card">
-                        <span class="evidence-score">score {s['score']:.2f}</span>
-                        &nbsp; <b>{s['source_name']}</b> ({loc}) — incident <code>{s['incident_id']}</code>
-                        </div>""",
+                        f"""
+                        <div class="evidence-card">
+
+                            <span class="evidence-score">
+                                score {source['score']:.2f}
+                            </span>
+
+                            &nbsp;
+
+                            <b>{source['source_name']}</b>
+
+                            ({location})
+
+                            —
+
+                            incident
+                            <code>{source['incident_id']}</code>
+
+                        </div>
+                        """,
                         unsafe_allow_html=True,
                     )
 
-# --------------------------------------------------------------------------
-# The ONLY thing the user interacts with: type a question, get an answer.
-# --------------------------------------------------------------------------
-question = st.chat_input("اكتب سؤالك هنا...")
+
+# ============================================================================
+# Chat input
+# ============================================================================
+
+question = st.chat_input(
+    "اكتب سؤالك هنا..."
+)
+
+
+# ============================================================================
+# Handle question
+# ============================================================================
 
 if question:
-    st.session_state.messages.append({"role": "user", "content": question})
+
+    # ------------------------------------------------------------
+    # Add user message
+    # ------------------------------------------------------------
+
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": question,
+        }
+    )
+
     with st.chat_message("user"):
+
         st.markdown(question)
 
+    # ------------------------------------------------------------
+    # Generate assistant response
+    # ------------------------------------------------------------
+
     with st.chat_message("assistant"):
+
         with st.spinner("جاري البحث..."):
+
             try:
+
                 result = rag_answer(
-                    client,
-                    question,
-                    st.session_state.rag_history,
-                    index,
-                    embed_model,
-                    metadata,
+                    client=client,
+                    question=question,
+                    history=st.session_state.rag_history,
+                    index=index,
+                    embed_model=embed_model,
+                    metadata=metadata,
+                    top_k=TOP_K,
+                    temperature=TEMPERATURE,
                 )
-            except Exception as e:
-                st.error(f"حصل خطأ أثناء توليد الإجابة: {e}")
+
+            except Exception as error:
+
+                st.error(
+                    f"حصل خطأ أثناء توليد الإجابة:\n\n{error}"
+                )
+
                 st.stop()
 
-        st.markdown(result["answer"])
-        if SHOW_SOURCES and result["sources"]:
-            with st.expander(f"📎 {len(result['sources'])} source(s) used"):
-                for s in result["sources"]:
-                    loc = f"page {s['page']}" if s["source_type"] == "pdf" else f"row {s['row_number']}"
+        # --------------------------------------------------------
+        # Show answer
+        # --------------------------------------------------------
+
+        st.markdown(
+            result["answer"]
+        )
+
+        # --------------------------------------------------------
+        # Show sources
+        # --------------------------------------------------------
+
+        if (
+            SHOW_SOURCES
+            and result["sources"]
+        ):
+
+            with st.expander(
+                f"📎 {len(result['sources'])} source(s) used"
+            ):
+
+                for source in result["sources"]:
+
+                    if source["source_type"] == "pdf":
+                        location = f"page {source['page']}"
+                    else:
+                        location = f"row {source['row_number']}"
+
                     st.markdown(
-                        f"""<div class="evidence-card">
-                        <span class="evidence-score">score {s['score']:.2f}</span>
-                        &nbsp; <b>{s['source_name']}</b> ({loc}) — incident <code>{s['incident_id']}</code>
-                        </div>""",
+                        f"""
+                        <div class="evidence-card">
+
+                            <span class="evidence-score">
+                                score {source['score']:.2f}
+                            </span>
+
+                            &nbsp;
+
+                            <b>{source['source_name']}</b>
+
+                            ({location})
+
+                            —
+
+                            incident
+                            <code>{source['incident_id']}</code>
+
+                        </div>
+                        """,
                         unsafe_allow_html=True,
                     )
 
+    # ------------------------------------------------------------
+    # Save assistant message
+    # ------------------------------------------------------------
+
     st.session_state.messages.append(
-        {"role": "assistant", "content": result["answer"], "sources": result["sources"]}
+        {
+            "role": "assistant",
+            "content": result["answer"],
+            "sources": result["sources"],
+        }
     )
