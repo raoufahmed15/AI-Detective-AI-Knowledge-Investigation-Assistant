@@ -50,7 +50,7 @@ REWRITE_MODEL = "gemini-flash-lite-latest"
 
 # Gemini API key for the live demo
 # Replace this value with your current Gemini API key if you rotate it.
-GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
+GEMINI_API_KEY = "AQ.Ab8RN6LEaCJuIqRkfOY8yJXgvasLH7nMENbQwQajsbm1wHltMg"
 
 TOP_K = 5
 TEMPERATURE = 0.5
