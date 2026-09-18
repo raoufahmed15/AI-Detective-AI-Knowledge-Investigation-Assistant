@@ -12,6 +12,11 @@ retrieval pipeline. Because a 12B local LLM (Mistral-Nemo-Instruct) is
 not deployable on free/CPU-only hosting like Streamlit Community Cloud,
 answer generation here uses the Google Gemini API instead — the
 retrieval side (embeddings + FAISS) is untouched from the notebook.
+
+Everything below is intentionally hard-coded (no sidebar, no settings
+UI): the end user only ever sees a question box and an answer. The
+API key comes ONLY from Streamlit secrets (GEMINI_API_KEY) — it is
+never entered by the user.
 """
 
 import json
@@ -29,30 +34,23 @@ except ImportError:  # pragma: no cover
     genai = None
     genai_types = None
 
-# --------------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------------
+# ==========================================================================
+# Fixed configuration — edit these values in code, never exposed in the UI
+# ==========================================================================
 APP_TITLE = "AI Detective"
 APP_SUBTITLE = "AI Knowledge Investigation Assistant"
-DEFAULT_ARTIFACTS_DIR = "model"  # folder holding config.json / index.faiss / metadata.pkl
+ARTIFACTS_DIR = "model"  # folder holding config.json / index.faiss / metadata.pkl
+
 # "-latest" aliases auto-track Google's current recommended model, so this
 # app doesn't need a code change every time a preview model is retired.
 GENERATION_MODEL = "gemini-flash-latest"
 REWRITE_MODEL = "gemini-flash-lite-latest"
 
-EXAMPLE_QUESTIONS = [
-    "Tell me about INC-001.",
-    "What vehicle was mentioned?",
-    "Was it mentioned in another case?",
-    "Does that prove the incidents are connected?",
-]
+TOP_K = 5              # evidence chunks retrieved per question
+TEMPERATURE = 0.5      # answer generation temperature
+SHOW_SOURCES = True    # show the retrieved evidence under each answer
 
-st.set_page_config(
-    page_title=APP_TITLE,
-    page_icon="🕵️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title=APP_TITLE, page_icon="🕵️", layout="centered")
 
 # --------------------------------------------------------------------------
 # Styling
@@ -60,11 +58,11 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 2rem; max-width: 950px; }
+    .block-container { padding-top: 2.5rem; max-width: 820px; }
     .ai-detective-header {
         display: flex; align-items: center; gap: 0.75rem;
-        padding-bottom: 0.25rem; border-bottom: 1px solid rgba(120,120,120,0.25);
-        margin-bottom: 1rem;
+        padding-bottom: 0.5rem; border-bottom: 1px solid rgba(120,120,120,0.25);
+        margin-bottom: 1.25rem;
     }
     .ai-detective-header h1 { margin: 0; font-size: 1.9rem; }
     .ai-detective-header p { margin: 0; opacity: 0.7; font-size: 0.95rem; }
@@ -83,60 +81,9 @@ st.markdown(
 )
 
 # --------------------------------------------------------------------------
-# Sidebar — settings
+# Load artifacts (cached) — silent to the user, no folder/setting exposed
 # --------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("### ⚙️ Settings")
-
-    artifacts_dir = st.text_input(
-        "Artifacts folder",
-        value=os.environ.get("ARTIFACTS_DIR", DEFAULT_ARTIFACTS_DIR),
-        help="Folder containing config.json, index.faiss and metadata.pkl "
-             "(this folder must sit next to app.py in the repo).",
-    )
-
-    api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
-    if not api_key:
-        api_key = st.text_input(
-            "Google Gemini API key",
-            type="password",
-            help="Only needed if GEMINI_API_KEY isn't set in Streamlit secrets.",
-        )
-
-    st.divider()
-    top_k = st.slider("Evidence chunks to retrieve (top_k)", 1, 10, 5)
-
-    st.markdown("#### 💬 اسأل سؤالك")
-    sidebar_question = st.text_input(
-        "اكتب أي سؤال",
-        key="sidebar_question_box",
-        placeholder="مثال: What happened in INC-004?",
-        label_visibility="collapsed",
-    )
-    if st.button("إرسال السؤال", use_container_width=True, key="sidebar_ask_btn"):
-        if sidebar_question.strip():
-            st.session_state.pending_question = sidebar_question.strip()
-
-    temperature = st.slider("Answer creativity (temperature)", 0.0, 1.0, 0.5, 0.05)
-    show_sources = st.checkbox("Show retrieved evidence under each answer", value=True)
-
-    st.divider()
-    if st.button("🗑️ Clear conversation", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.rag_history = []
-        st.rerun()
-
-    st.divider()
-    st.markdown("### 💡 أمثلة سريعة (اختياري)")
-    for q in EXAMPLE_QUESTIONS:
-        if st.button(q, use_container_width=True, key=f"example_{q}"):
-            st.session_state.pending_question = q
-
-
-# --------------------------------------------------------------------------
-# Load artifacts (cached)
-# --------------------------------------------------------------------------
-@st.cache_resource(show_spinner="Loading FAISS index & metadata...")
+@st.cache_resource(show_spinner="Loading knowledge base...")
 def load_artifacts(directory: str):
     config_path = os.path.join(directory, "config.json")
     index_path = os.path.join(directory, "index.faiss")
@@ -229,7 +176,7 @@ Rewritten question:"""
     return rewritten or question
 
 
-def rag_answer(client, question, history, index, embed_model, metadata, top_k=5, temperature=0.5):
+def rag_answer(client, question, history, index, embed_model, metadata, top_k=TOP_K, temperature=TEMPERATURE):
     contextualized = contextualize_query(client, history, question)
     evidence = search_index(contextualized, embed_model, index, metadata, top_k=top_k)
     prompt = build_rag_prompt(question, evidence, build_context(history))
@@ -255,7 +202,7 @@ st.markdown(
         <div style="font-size:2.2rem;">🕵️</div>
         <div>
             <h1>{APP_TITLE}</h1>
-            <p>{APP_SUBTITLE} — retrieval-augmented Q&A over incident reports &amp; case records</p>
+            <p>{APP_SUBTITLE}</p>
         </div>
     </div>
     """,
@@ -263,36 +210,28 @@ st.markdown(
 )
 
 # --------------------------------------------------------------------------
-# Load everything, fail gracefully with clear instructions
+# Startup checks — developer-facing errors only, nothing for the end user
+# to configure
 # --------------------------------------------------------------------------
 try:
-    config, index, metadata = load_artifacts(artifacts_dir)
+    config, index, metadata = load_artifacts(ARTIFACTS_DIR)
 except FileNotFoundError as e:
     st.error(
-        f"Couldn't find the artifacts folder or a file inside it: `{e}`.\n\n"
-        f"Make sure a folder named **`{artifacts_dir}`** containing "
-        f"`config.json`, `index.faiss` and `metadata.pkl` sits next to `app.py` "
-        f"in your GitHub repo, then redeploy."
+        f"Setup error: couldn't find `{e}`. Make sure the `{ARTIFACTS_DIR}/` folder "
+        f"(config.json, index.faiss, metadata.pkl) is committed next to app.py."
     )
     st.stop()
 
+api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
 if not api_key:
-    st.warning(
-        "Add your **Google Gemini API key** in the sidebar (or set `GEMINI_API_KEY` "
-        "in Streamlit secrets) to start chatting."
+    st.error(
+        "Setup error: `GEMINI_API_KEY` is not set in Streamlit secrets. "
+        "Add it from App settings → Secrets, then reboot the app."
     )
     st.stop()
 
 embed_model = load_embedding_model(config.get("embedding_model", "intfloat/multilingual-e5-base"))
 client = get_client(api_key)
-
-with st.sidebar:
-    st.divider()
-    st.markdown("### 📦 Knowledge base")
-    st.caption(f"Embedding model: `{config.get('embedding_model', 'n/a')}`")
-    st.caption(f"Knowledge items: **{config.get('num_knowledge_items', index.ntotal)}**")
-    st.caption(f"Index type: `{config.get('index_type', 'FAISS')}`")
-    st.caption(f"Built: {config.get('created_at', 'n/a')}")
 
 # --------------------------------------------------------------------------
 # Chat state
@@ -303,16 +242,12 @@ if "rag_history" not in st.session_state:
     st.session_state.rag_history = []  # buffer memory fed into contextualize_query / prompt
 
 if not st.session_state.messages:
-    st.info(
-        "Ask about a specific incident (e.g. *\"What happened in INC-001?\"*), a detail "
-        "across cases, or a follow-up like *\"was it mentioned elsewhere?\"* — the assistant "
-        "keeps conversation memory and answers strictly from the retrieved evidence."
-    )
+    st.caption("اسأل عن أي حادثة أو تفصيلة، وهيجاوبك بناءً على الأدلة المسترجعة فقط.")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg["role"] == "assistant" and show_sources and msg.get("sources"):
+        if msg["role"] == "assistant" and SHOW_SOURCES and msg.get("sources"):
             with st.expander(f"📎 {len(msg['sources'])} source(s) used"):
                 for s in msg["sources"]:
                     loc = f"page {s['page']}" if s["source_type"] == "pdf" else f"row {s['row_number']}"
@@ -325,11 +260,9 @@ for msg in st.session_state.messages:
                     )
 
 # --------------------------------------------------------------------------
-# Input handling (chat box or example-question button)
+# The ONLY thing the user interacts with: type a question, get an answer.
 # --------------------------------------------------------------------------
-question = st.chat_input("Ask the AI Detective about a case...")
-if not question and st.session_state.get("pending_question"):
-    question = st.session_state.pop("pending_question")
+question = st.chat_input("اكتب سؤالك هنا...")
 
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
@@ -337,7 +270,7 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        with st.spinner("Investigating..."):
+        with st.spinner("جاري البحث..."):
             try:
                 result = rag_answer(
                     client,
@@ -346,17 +279,13 @@ if question:
                     index,
                     embed_model,
                     metadata,
-                    top_k=top_k,
-                    temperature=temperature,
                 )
             except Exception as e:
-                st.error(f"Something went wrong while generating the answer: {e}")
+                st.error(f"حصل خطأ أثناء توليد الإجابة: {e}")
                 st.stop()
 
         st.markdown(result["answer"])
-        if result["contextualized_question"] != result["original_question"]:
-            st.caption(f"🔎 Understood as: *{result['contextualized_question']}*")
-        if show_sources and result["sources"]:
+        if SHOW_SOURCES and result["sources"]:
             with st.expander(f"📎 {len(result['sources'])} source(s) used"):
                 for s in result["sources"]:
                     loc = f"page {s['page']}" if s["source_type"] == "pdf" else f"row {s['row_number']}"
