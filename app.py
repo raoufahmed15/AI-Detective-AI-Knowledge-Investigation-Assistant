@@ -45,13 +45,20 @@ APP_SUBTITLE = "AI Knowledge Investigation Assistant"
 
 ARTIFACTS_DIR = "model"
 
+from google import genai
+
+GEMINI_API_KEY = "AQ.Ab8RN6LEaCJuIqRkfOY8yJXgvasLH7nMENbQwQajsbm1wHltMg"
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+
 # Gemini models
-GENERATION_MODEL = "gemini-flash-latest"
-REWRITE_MODEL = "gemini-flash-lite-latest"
+GENERATION_MODEL = "gemini-3.7-flash"
+REWRITE_MODEL = "gemini-3.7-flash"
 
 # Gemini API key for the live demo
 # Replace this value with your current Gemini API key if you rotate it.
-GEMINI_API_KEY = "AQ.Ab8RN6LEaCJuIqRkfOY8yJXgvasLH7nMENbQwQajsbm1wHltMg"
+GEMINI_API_KEY = "AQ.Ab8RN6LwhqHr1NhZT2eafT3kFknxdnInCSmd_uHLBp_R8KqzRQ"
 
 TOP_K = 5
 TEMPERATURE = 0.5
