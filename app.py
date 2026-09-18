@@ -23,6 +23,7 @@ import json
 import os
 import pickle
 
+import requests
 import faiss
 import streamlit as st
 from sentence_transformers import SentenceTransformer
@@ -66,6 +67,9 @@ st.set_page_config(
     page_icon="🕵️",
     layout="centered",
 )
+
+# Current google-genai releases support the 2026 Gemini authentication changes.
+# Streamlit Cloud should install google-genai==2.24.0 from requirements.txt.
 
 
 # ============================================================================
@@ -302,28 +306,90 @@ Answer:
 # ============================================================================
 
 def get_client():
-    """
-    Create the official Google GenAI client.
-
-    The API key is loaded from GEMINI_API_KEY defined in this file.
-    """
-
-    if genai is None:
-        raise RuntimeError(
-            "The 'google-genai' package is not installed. "
-            "Run: pip install -U google-genai"
-        )
+    """Create the official Google GenAI client."""
 
     api_key = get_api_key()
 
-    return genai.Client(
-        api_key=api_key
-    )
+    if genai is None:
+        return {"api_key": api_key, "sdk": None}
+
+    return {
+        "api_key": api_key,
+        "sdk": genai.Client(api_key=api_key),
+    }
 
 
 # ============================================================================
 # Gemini text generation
 # ============================================================================
+
+def _generate_text_rest(
+    api_key,
+    prompt,
+    model,
+    max_tokens=500,
+    temperature=0.5,
+):
+    """
+    Direct Gemini REST fallback using the documented x-goog-api-key header.
+    This bypasses SDK credential/header handling.
+    """
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent"
+    )
+
+    response = requests.post(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        json={
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            },
+        },
+        timeout=60,
+    )
+
+    if not response.ok:
+        try:
+            details = response.json()
+        except Exception:
+            details = response.text
+
+        raise RuntimeError(
+            f"Gemini REST error {response.status_code}: {details}"
+        )
+
+    payload = response.json()
+    candidates = payload.get("candidates") or []
+
+    text_parts = []
+    for candidate in candidates:
+        content = candidate.get("content") or {}
+        for part in content.get("parts") or []:
+            part_text = part.get("text")
+            if part_text:
+                text_parts.append(part_text)
+
+    text = "\n".join(text_parts).strip()
+
+    if not text:
+        raise RuntimeError("Gemini REST returned an empty response.")
+
+    return text
+
 
 def generate_text(
     client,
@@ -333,26 +399,63 @@ def generate_text(
     temperature=0.5,
 ):
     """
-    Generate text using Gemini.
+    Generate text with the official SDK, then fall back to direct REST
+    if the SDK request fails at the authentication layer.
     """
 
-    response = client.models.generate_content(
+    api_key = client["api_key"]
+    sdk_client = client.get("sdk")
+
+    if sdk_client is not None and genai_types is not None:
+        try:
+            response = sdk_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+
+            text = getattr(response, "text", None)
+
+            if text:
+                return text.strip()
+
+        except Exception as sdk_error:
+            sdk_message = str(sdk_error)
+
+            # Authentication failures can sometimes come from SDK/header
+            # handling. Try the documented REST header path before failing.
+            if "401" not in sdk_message and "UNAUTHENTICATED" not in sdk_message:
+                raise
+
+            try:
+                return _generate_text_rest(
+                    api_key=api_key,
+                    prompt=prompt,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            except Exception as rest_error:
+                raise RuntimeError(
+                    "Gemini authentication failed in both the Python SDK "
+                    "and the direct REST API. The key is being sent through "
+                    "the documented x-goog-api-key header. Check that the "
+                    "complete AQ. authorization key is active and linked to "
+                    "a Gemini API project.\n\n"
+                    f"SDK error: {sdk_message}\n\n"
+                    f"REST error: {rest_error}"
+                ) from rest_error
+
+    return _generate_text_rest(
+        api_key=api_key,
+        prompt=prompt,
         model=model,
-        contents=prompt,
-        config=genai_types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-        ),
+        max_tokens=max_tokens,
+        temperature=temperature,
     )
-
-    text = getattr(response, "text", None)
-
-    if not text:
-        raise RuntimeError(
-            "Gemini returned an empty response."
-        )
-
-    return text.strip()
 
 
 # ============================================================================
@@ -581,7 +684,6 @@ except Exception as error:
     st.error(
         f"Gemini initialization failed: {error}"
     )
-
     st.stop()
 
 
